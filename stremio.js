@@ -21,9 +21,15 @@ const manifest = {
     version: '1.0.0',
     name: 'TMDB Embed Streams',
     description: 'Stream movies and TV shows from multiple embed sources including 2embed, embedsu, autoembed, and vidsrcsu',
-    resources: ['stream'],
+    resources: [
+        {
+            name: 'stream',
+            types: ['movie', 'series'],
+            idPrefixes: ['tt']
+        }
+    ],
     types: ['movie', 'series'],
-    idPrefixes: ['tt'],  // This tells Stremio we handle IMDB IDs
+    idPrefixes: ['tt'],
     catalogs: [],
     behaviorHints: {
         adult: false,
