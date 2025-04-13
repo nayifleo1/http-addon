@@ -1,0 +1,15 @@
+{
+  "name": "stremio-tmdb-embed",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Stremio addon for TMDB embed streams",
+  "main": "stremio.js",
+  "scripts": {
+    "start": "node stremio.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "stremio-addon-sdk": "^1.6.10",
+    "node-fetch": "^3.3.0"
+  }
+} 
