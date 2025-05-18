@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# Sub-project dependencies
+vidsrc-api-js/node_modules/
+m3u8proxy/node_modules/
+
 # Environment files
 
 .env.local

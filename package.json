@@ -5,8 +5,10 @@
   "main": "stremio.js",
   "type": "module",
   "scripts": {
-    "start": "node stremio.js",
-    "dev": "nodemon stremio.js"
+    "start": "concurrently \"node stremio.js\" \"node vidsrc-api-js/index.js\" \"cd m3u8proxy && npm start\"",
+    "dev": "nodemon stremio.js",
+    "dev:concurrent": "concurrently \"node stremio.js\" \"node vidsrc-api-js/index.js\" \"cd m3u8proxy && npm start\"",
+    "postinstall": "(cd vidsrc-api-js && npm install) && (cd m3u8proxy && npm install)"
   },
   "keywords": [
     "stremio",
@@ -22,6 +24,7 @@
     "stremio-addon-sdk": "^1.6.10"
   },
   "devDependencies": {
+    "concurrently": "^9.1.2",
     "nodemon": "^2.0.20"
   }
-} 
+}
