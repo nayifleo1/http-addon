@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 const apiToken = process.env.TMDB_API_KEY;
+console.log('[tmdb.js] Loaded TMDB_API_KEY:', apiToken);
 
 const fetchOptions = {
     headers: {
@@ -80,5 +81,36 @@ export async function getTvFromTmdb(tmdb_id, season, episode) {
         return info;
     } catch (e) {
         return new Error("An error occurred: " + e.message);
+    }
+}
+
+// Added function to find TMDB ID by IMDB ID
+export async function findTmdbIdByImdbId(imdbId, type = 'movie') {
+    try {
+        const url = `https://api.themoviedb.org/3/find/${imdbId}?external_source=imdb_id`;
+        // fetchOptions should be defined in this file, ensure it is.
+        // It is defined at the top of the provided file context.
+        const response = await fetch(url, fetchOptions); 
+        const data = await response.json();
+
+        if (data.success === false && data.status_code === 34) { // TMDB uses status_code 34 for "resource not found"
+             console.warn(`TMDB API: Resource not found for IMDB ID ${imdbId}. Message: ${data.status_message}`);
+             return null; // Explicitly return null for not found
+        }
+        if (data.success === false) {
+            console.error(`TMDB API error for IMDB ID ${imdbId}: ${data.status_message}`);
+            return new Error(data.status_message || "ID not found during conversion");
+        }
+
+        if (type === 'movie' && data.movie_results && data.movie_results.length > 0) {
+            return data.movie_results[0].id;
+        } else if ((type === 'tv' || type === 'series') && data.tv_results && data.tv_results.length > 0) {
+            return data.tv_results[0].id;
+        }
+        console.warn(`No TMDB ID found for IMDB ID ${imdbId} of type ${type}. Response:`, data);
+        return null; // Return null if not found after successful API call
+    } catch (e) {
+        console.error(`Error in findTmdbIdByImdbId for IMDB ID ${imdbId}:`, e);
+        return new Error("An error occurred during ID conversion: " + e.message);
     }
 }
