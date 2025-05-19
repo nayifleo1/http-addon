@@ -123,9 +123,20 @@ function processStreamingSource(source) {
             }
         }
 
+        // Route all m3u8 URLs through our proxy
+        let streamUrl = file.file;
+        if (file.type === 'hls' || file.file.includes('.m3u8')) {
+            streamUrl = `http://localhost:8082/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
+            
+            // Include required headers in the proxy URL if they exist
+            if (headers) {
+                streamUrl += `&headers=${encodeURIComponent(JSON.stringify(headers))}`;
+            }
+        }
+
         const stream = {
             title: `${provider} ${quality || ''} ${file.lang || ''}`.trim(),
-            url: file.file,
+            url: streamUrl,
             name: provider,
             type: file.type || 'url',
             // Include quality if available
