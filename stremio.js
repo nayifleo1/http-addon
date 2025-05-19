@@ -100,6 +100,9 @@ function processStreamingSource(source) {
         '360p': /360p|360|ld/i
     };
 
+    const isProductionEnvironment = process.env.NODE_ENV === 'production';
+    const m3u8ProxyBaseUrl = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : 'http://localhost:8082';
+
     files.forEach(file => {
         // Try to determine quality from the file URL if not provided
         let quality = file.quality;
@@ -126,7 +129,7 @@ function processStreamingSource(source) {
         // Route all m3u8 URLs through our proxy
         let streamUrl = file.file;
         if (file.type === 'hls' || file.file.includes('.m3u8')) {
-            streamUrl = `http://localhost:8082/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
+            streamUrl = `${m3u8ProxyBaseUrl}/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
             
             // Include required headers in the proxy URL if they exist
             if (headers) {
