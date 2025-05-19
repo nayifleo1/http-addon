@@ -5,7 +5,7 @@ import fetch from 'node-fetch';
 
 dotenv.config();
 
-const API_BASE_URL = 'http://localhost:8080';
+const API_BASE_URL = 'http://localhost:8081';
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const PORT = process.env.PORT || 7004;  // Added port configuration

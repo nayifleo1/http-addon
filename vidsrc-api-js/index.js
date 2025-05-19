@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // Use PORT from environment variable or fallback to 8080 for cloud platforms
-const PORT = process.env.PORT || 8080;
+const PORT = 8081;
 const app = express();
 
 app.use(cors());
