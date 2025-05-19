@@ -4,8 +4,9 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const host = process.env.HOST || "127.0.0.1";
-const port = process.env.PORT || 8080;
-const web_server_url = process.env.PUBLIC_URL || `http://${host}:${port}`;
+// const port = process.env.PORT || 8080; // PORT for listening is handled in server.js
+const isProductionEnvironment = process.env.NODE_ENV === 'production';
+const web_server_url = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : (process.env.PUBLIC_URL || `http://${host}:8082`); // Use 8082 for local dev
 
 export default async function proxyM3U8(url, headers, res) {
   const req = await axios(url, {
