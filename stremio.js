@@ -9,6 +9,7 @@ const API_BASE_URL = 'http://localhost:8081';
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const PORT = process.env.PORT || 7004;  // Added port configuration
+const M3U8_PROXY_URL = process.env.M3U8_PROXY_URL; // Added for m3u8 proxy
 
 // Cache settings
 const CACHE_MAX_AGE = 60 * 60; // 1 hour in seconds
@@ -126,11 +127,16 @@ function processStreamingSource(source) {
         // Route all m3u8 URLs through our proxy
         let streamUrl = file.file;
         if (file.type === 'hls' || file.file.includes('.m3u8')) {
-            streamUrl = `http://localhost:8082/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
+            if (!M3U8_PROXY_URL) {
+                console.error("M3U8_PROXY_URL environment variable is not set. Cannot proxy m3u8 streams.");
+                // Potentially fall back to direct URL or skip this stream
+            } else {
+                streamUrl = `${M3U8_PROXY_URL}/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
             
-            // Include required headers in the proxy URL if they exist
-            if (headers) {
-                streamUrl += `&headers=${encodeURIComponent(JSON.stringify(headers))}`;
+                // Include required headers in the proxy URL if they exist
+                if (headers) {
+                    streamUrl += `&headers=${encodeURIComponent(JSON.stringify(headers))}`;
+                }
             }
         }
 
@@ -271,6 +277,58 @@ builder.defineStreamHandler(async (args) => {
 
 const addonInterface = builder.getInterface();
 console.log('Addon interface created');
+
+// Add route to proxy m3u8 requests to the internal m3u8proxy service
+addonInterface.get('/m3u8-proxy', async (req, res) => {
+    const remoteM3u8Url = req.query.url; // This is the actual URL of the .m3u8 file
+    const remoteM3u8Headers = req.query.headers; // This is the stringified & URI encoded JSON of headers for the remote .m3u8 file
+
+    if (!remoteM3u8Url) {
+        console.log('[stremio.js] /m3u8-proxy: Missing URL parameter');
+        return res.status(400).send('Missing URL parameter for m3u8 file');
+    }
+
+    // Construct the URL to call the internal m3u8proxy service
+    // The m3u8proxy service itself expects /m3u8-proxy?url=...&headers=...
+    let internalProxyServiceUrl = `http://localhost:8082/m3u8-proxy?url=${encodeURIComponent(remoteM3u8Url)}`;
+    if (remoteM3u8Headers) {
+        // remoteM3u8Headers is already an encoded component string, so append directly
+        internalProxyServiceUrl += `&headers=${remoteM3u8Headers}`;
+    }
+
+    console.log(`[stremio.js] /m3u8-proxy: Forwarding to internal m3u8proxy: ${internalProxyServiceUrl}`);
+
+    try {
+        const proxyResponse = await fetch(internalProxyServiceUrl);
+
+        // Forward status code from the m3u8proxy service's response
+        res.status(proxyResponse.status);
+
+        // Forward headers from the m3u8proxy service's response
+        proxyResponse.headers.forEach((value, name) => {
+            // Let Express handle content-length and transfer-encoding if it re-chunks or for HEAD requests.
+            const lowerCaseName = name.toLowerCase();
+            if (lowerCaseName !== 'transfer-encoding' && lowerCaseName !== 'content-length') {
+                 res.setHeader(name, value);
+            }
+        });
+        
+        // Stream the body from m3u8proxy service to the client
+        if (req.method !== 'HEAD') {
+            proxyResponse.body.pipe(res);
+        } else {
+            res.end();
+        }
+
+    } catch (error) {
+        console.error('[stremio.js] /m3u8-proxy: Error proxying to internal m3u8 service:', error.message);
+        if (!res.headersSent) {
+            res.status(500).send('Error proxying m3u8 request');
+        } else {
+            res.end(); // Terminate the response if headers were already sent
+        }
+    }
+});
 
 // Serve the addon
 console.log('Starting HTTP server on port', PORT);
