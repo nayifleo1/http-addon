@@ -2,8 +2,6 @@ import dotenv from 'dotenv';
 import { addonBuilder } from 'stremio-addon-sdk';
 import serveHTTP from 'stremio-addon-sdk/src/serveHTTP.js';
 import fetch from 'node-fetch';
-// Import functions from tmdb.js
-import { getMovieFromTmdb, getTvFromTmdb, findTmdbIdByImdbId } from './vidsrc-api-js/src/workers/tmdb.js';
 
 dotenv.config();
 
@@ -45,6 +43,38 @@ const manifest = {
 console.log('Starting Stremio addon with manifest:', manifest);
 
 const builder = new addonBuilder(manifest);
+
+// Function to convert IMDB ID to TMDB ID
+async function convertImdbToTmdb(imdbId, type = 'movie') {
+    try {
+        console.log(`Converting IMDB ID ${imdbId} to TMDB ID`);
+        const url = `${TMDB_API_URL}/find/${imdbId}?external_source=imdb_id`;
+        console.log(`Fetching from TMDB: ${url}`);
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${TMDB_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        if (!response.ok) {
+            console.error(`TMDB API error: ${response.status}`);
+            return null;
+        }
+        const data = await response.json();
+        console.log('TMDB response:', data);
+
+        // TMDB returns different arrays for movies and TV shows
+        if (type === 'movie' && data.movie_results && data.movie_results.length > 0) {
+            return data.movie_results[0].id;
+        } else if (type === 'series' && data.tv_results && data.tv_results.length > 0) {
+            return data.tv_results[0].id;
+        }
+        return null;
+    } catch (error) {
+        console.error('Error converting IMDB to TMDB ID:', error);
+        return null;
+    }
+}
 
 function processStreamingSource(source) {
     console.log('Processing source:', source);
@@ -161,95 +191,77 @@ builder.defineStreamHandler(async (args) => {
 
     try {
         let allStreams = [];
-        let mediaInfo; // To store info from getMovieFromTmdb or getTvFromTmdb
         
         if (args.type === 'movie') {
+            // For movies, convert IMDB ID to TMDB ID first
             const imdbId = args.id;
-            // const tmdbId = "placeholder_tmdb_id"; // Placeholder: This needs to be replaced with actual conversion
-            const tmdbId = await findTmdbIdByImdbId(imdbId, 'movie'); 
+            const tmdbId = await convertImdbToTmdb(imdbId, 'movie');
             
-            if (!tmdbId || tmdbId instanceof Error) {
-                if(tmdbId instanceof Error) console.error('Error converting IMDB to TMDB ID for movie:', imdbId, tmdbId.message);
-                else console.log('Could not find TMDB ID for movie:', imdbId);
+            if (!tmdbId) {
+                console.log('Could not find TMDB ID for movie:', imdbId);
                 return enrichCacheParams([]);
             }
             
-            mediaInfo = await getMovieFromTmdb(tmdbId); // Get metadata via imported function
-
-            if (mediaInfo instanceof Error) {
-                console.error('Error fetching movie data from tmdb.js:', mediaInfo.message);
-                return enrichCacheParams([]);
-            }
-            
-            // Now fetch streams from your API using TMDB ID (or IMDB ID if your API supports it)
-            // The API_BASE_URL is for streams.
-            const streamUrl = `${API_BASE_URL}/movie/${tmdbId}`; // Assuming your API uses TMDB ID for streams
-            console.log(`Fetching streams from: ${streamUrl}`);
-            const response = await fetch(streamUrl);
-            console.log('Stream API Response status:', response.status);
+            // Fetch from our API using TMDB ID
+            const url = `${API_BASE_URL}/movie/${tmdbId}`;
+            console.log(`Fetching from: ${url}`);
+            const response = await fetch(url);
+            console.log('Response status:', response.status);
             if (!response.ok) {
-                console.error(`Stream API error: ${response.status}`);
+                console.error(`API error: ${response.status}`);
                 return enrichCacheParams([]);
             }
             const results = await response.json();
-            console.log('Stream API response:', JSON.stringify(results, null, 2));
+            console.log('API response:', JSON.stringify(results, null, 2));
             
             if (results && !(results instanceof Error)) {
+                // Process each source/provider
                 results.forEach(result => {
                     const processedStreams = processStreamingSource(result);
+                    console.log('Processed streams for result:', processedStreams);
                     allStreams = allStreams.concat(processedStreams);
                 });
             }
         } else if (args.type === 'series') {
-            const [imdbId, seasonStr, episodeStr] = args.id.split(':');
-            const season = parseInt(seasonStr);
-            const episode = parseInt(episodeStr);
+            // For series, the ID format is tt1234567:1:1
+            const [imdbId, season, episode] = args.id.split(':');
             
             if (!season || !episode) {
                 console.log('Missing season or episode number');
                 return enrichCacheParams([]);
             }
 
-            // const tmdbId = await findTmdbId(imdbId, 'series'); // Ideal call
-            // const tmdbId = "placeholder_tmdb_id"; // Placeholder
-            const tmdbId = await findTmdbIdByImdbId(imdbId, 'series');
-
-            if (!tmdbId || tmdbId instanceof Error) {
-                if(tmdbId instanceof Error) console.error('Error converting IMDB to TMDB ID for series:', imdbId, tmdbId.message);
-                else console.log('Could not find TMDB ID for series:', imdbId);
-                return enrichCacheParams([]);
-            }
-
-            mediaInfo = await getTvFromTmdb(tmdbId, season, episode); // Get metadata
-
-            if (mediaInfo instanceof Error) {
-                console.error('Error fetching TV data from tmdb.js:', mediaInfo.message);
-                return enrichCacheParams([]);
-            }
+            // Convert IMDB ID to TMDB ID
+            const tmdbId = await convertImdbToTmdb(imdbId, 'series');
             
-            // Fetch streams from your API
-            const streamUrl = `${API_BASE_URL}/tv/${tmdbId}?s=${season}&e=${episode}`; // Assuming your API uses TMDB ID
-            console.log(`Fetching streams from: ${streamUrl}`);
-            const response = await fetch(streamUrl);
-            console.log('Stream API Response status:', response.status);
+            if (!tmdbId) {
+                console.log('Could not find TMDB ID for series:', imdbId);
+                return enrichCacheParams([]);
+            }
+
+            // Fetch from our API using TMDB ID
+            const url = `${API_BASE_URL}/tv/${tmdbId}?s=${season}&e=${episode}`;
+            console.log(`Fetching from: ${url}`);
+            const response = await fetch(url);
+            console.log('Response status:', response.status);
             if (!response.ok) {
-                console.error(`Stream API error: ${response.status}`);
+                console.error(`API error: ${response.status}`);
                 return enrichCacheParams([]);
             }
             const results = await response.json();
-            console.log('Stream API response:', JSON.stringify(results, null, 2));
+            console.log('API response:', JSON.stringify(results, null, 2));
 
             if (results && !(results instanceof Error)) {
+                // Process each source/provider
                 results.forEach(result => {
                     const processedStreams = processStreamingSource(result);
+                    console.log('Processed streams for result:', processedStreams);
                     allStreams = allStreams.concat(processedStreams);
                 });
             }
         }
 
         console.log('Final streams:', JSON.stringify(allStreams, null, 2));
-        // Enrich streams with mediaInfo if available and if your processStreamingSource or enrichCacheParams needs it
-        // For example, you might want to pass mediaInfo.title to processStreamingSource
         return enrichCacheParams(allStreams);
     } catch (error) {
         console.error('Error in stream handler:', error);
