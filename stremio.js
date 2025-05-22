@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { addonBuilder } from 'stremio-addon-sdk';
 import serveHTTP from 'stremio-addon-sdk/src/serveHTTP.js';
 import fetch from 'node-fetch';
+import os from 'os'; // Import the 'os' module
 
 dotenv.config();
 
@@ -43,6 +44,20 @@ const manifest = {
 console.log('Starting Stremio addon with manifest:', manifest);
 
 const builder = new addonBuilder(manifest);
+
+// Function to get local IP address
+function getLocalIpAddress() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            const { address, family, internal } = iface;
+            if (family === 'IPv4' && !internal) {
+                return address;
+            }
+        }
+    }
+    return '0.0.0.0'; // Fallback
+}
 
 // Function to convert IMDB ID to TMDB ID
 async function convertImdbToTmdb(imdbId, type = 'movie') {
@@ -101,7 +116,7 @@ function processStreamingSource(source) {
     };
 
     const isProductionEnvironment = process.env.NODE_ENV === 'production';
-    const m3u8ProxyBaseUrl = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : 'http://localhost:8082';
+    const m3u8ProxyBaseUrl = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : 'http://152.67.188.54:7004';
 
     files.forEach(file => {
         // Try to determine quality from the file URL if not provided
@@ -276,5 +291,13 @@ const addonInterface = builder.getInterface();
 console.log('Addon interface created');
 
 // Serve the addon
-console.log('Starting HTTP server on port', PORT);
-serveHTTP(addonInterface, { port: PORT }); 
+console.log('Starting HTTP server on port ' + PORT);
+serveHTTP(addonInterface, { port: PORT, host: '0.0.0.0' }) // Listen on 0.0.0.0
+    .then(({ url }) => {
+        const localIp = getLocalIpAddress();
+        console.log('HTTP addon accessible at: http://' + localIp + ':' + PORT + '/manifest.json');
+        console.log('Also accessible at: ' + url); // This will likely show 127.0.0.1
+    })
+    .catch(err => {
+        console.error('Error starting HTTP server:', err);
+    }); 
