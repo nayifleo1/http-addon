@@ -119,6 +119,7 @@ function processStreamingSource(source) {
     const localIp = getLocalIpAddress(); // Get local IP
     const m3u8ProxyPort = 8082; // Assuming m3u8proxy runs on port 8082 as per logs
     const m3u8ProxyBaseUrl = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : `http://${localIp}:${m3u8ProxyPort}`;
+    const disableM3u8Proxy = process.env.DISABLE_M3U8_PROXY === 'true';
 
     files.forEach(file => {
         // Try to determine quality from the file URL if not provided
@@ -145,13 +146,37 @@ function processStreamingSource(source) {
 
         // Route all m3u8 URLs through our proxy
         let streamUrl = file.file;
-        if (file.type === 'hls' || file.file.includes('.m3u8')) {
+
+        // --- BEGIN DEBUG LOGS ---
+        const isHlsType = file.type === 'hls';
+        const urlIncludesM3u8 = file.file && file.file.includes('.m3u8');
+        console.log(`[PROXY_DEBUG] File URL: "${file.file}", Original File Type: "${file.type}", Provider: "${provider}"`);
+        console.log(`[PROXY_DEBUG] -> isHlsType: ${isHlsType}, urlIncludesM3u8: ${urlIncludesM3u8}, disableM3u8Proxy: ${disableM3u8Proxy}`);
+        const shouldProxyThisFile = !disableM3u8Proxy && (isHlsType || urlIncludesM3u8);
+        console.log(`[PROXY_DEBUG] -> Decision: Should proxy? ${shouldProxyThisFile}`);
+        // --- END DEBUG LOGS ---
+
+        let customHeaders = headers || {};
+
+        if (shouldProxyThisFile) {
             streamUrl = `${m3u8ProxyBaseUrl}/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
-            
-            // Include required headers in the proxy URL if they exist
             if (headers) {
                 streamUrl += `&headers=${encodeURIComponent(JSON.stringify(headers))}`;
             }
+        } else if (provider === 'EmbedSu' && disableM3u8Proxy && (isHlsType || urlIncludesM3u8)) {
+            // Custom headers for EmbedSu when proxy is disabled
+            console.log(`[CUSTOM_HEADER_DEBUG] Applying custom headers for EmbedSu direct play (proxy disabled). Original file: ${file.file}`);
+            customHeaders = {
+                ...customHeaders, // Keep original headers like Referer if present
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': 'application/vnd.apple.mpegurl, application/x-mpegurl, application/octet-stream, */*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'cross-site',
+                // Origin might be tricky, some servers are strict. EmbedSu provides it, so we might be okay.
+            };
+            // Ensure notWebReady is true so Stremio uses an external player that can send these headers
         }
 
         const stream = {
@@ -165,7 +190,7 @@ function processStreamingSource(source) {
             language: file.lang || 'unknown',
             // Include headers required for playback
             behaviorHints: {
-                headers: headers || {},
+                headers: customHeaders,
                 notWebReady: true // This indicates the stream needs external player
             }
         };
