@@ -1,12 +1,27 @@
 import axios from "axios";
 import dotenv from "dotenv";
+import os from 'os'; // Import os module
 
 dotenv.config();
 
-const host = process.env.HOST || "127.0.0.1";
-// const port = process.env.PORT || 8080; // PORT for listening is handled in server.js
+// Function to get local IP address
+function getLocalIpAddress() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            const { address, family, internal } = iface;
+            if (family === 'IPv4' && !internal) {
+                return address;
+            }
+        }
+    }
+    return '127.0.0.1'; // Fallback to localhost
+}
+
+const localIp = getLocalIpAddress();
+const m3u8ProxyPort = 8082; // Port for m3u8proxy
 const isProductionEnvironment = process.env.NODE_ENV === 'production';
-const web_server_url = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : (process.env.PUBLIC_URL || `http://${host}:8082`); // Use 8082 for local dev
+const web_server_url = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : `http://${localIp}:${m3u8ProxyPort}`; 
 
 export default async function proxyM3U8(url, headers, res) {
   const req = await axios(url, {

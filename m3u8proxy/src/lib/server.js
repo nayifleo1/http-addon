@@ -1,12 +1,27 @@
 import dotenv from "dotenv";
 import createServer from "./createServer.js";
 import colors from "colors";
+import os from 'os';
 
 dotenv.config();
 
-const host = process.env.HOST || "127.0.0.1";
+function getLocalIpAddress() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            const { address, family, internal } = iface;
+            if (family === 'IPv4' && !internal) {
+                return address;
+            }
+        }
+    }
+    return '127.0.0.1';
+}
+
+const localIp = getLocalIpAddress();
+const host = "0.0.0.0";
 const port = 8082;
-const web_server_url = process.env.PUBLIC_URL || `http://${host}:${port}`;
+const web_server_url = process.env.PUBLIC_URL || `http://${localIp}:${port}`;
 
 export default function server() {
   createServer({
