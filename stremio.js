@@ -10,6 +10,7 @@ const API_BASE_URL = 'http://localhost:8081';
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const PORT = process.env.PORT || 7004;  // Added port configuration
+const DISABLE_M3U8_PROXY = process.env.DISABLE_M3U8_PROXY === 'true'; // Added option to disable proxy
 
 // Cache settings
 const CACHE_MAX_AGE = 60 * 60; // 1 hour in seconds
@@ -145,7 +146,7 @@ function processStreamingSource(source) {
 
         // Route m3u8 URLs through our proxy, except for 2embed
         let streamUrl = file.file;
-        if ((file.type === 'hls' || file.file.includes('.m3u8')) && provider !== '2embed') {
+        if (!DISABLE_M3U8_PROXY && (file.type === 'hls' || file.file.includes('.m3u8')) && provider !== '2embed') {
             streamUrl = `${m3u8ProxyBaseUrl}/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
             
             // Include required headers in the proxy URL if they exist
