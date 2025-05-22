@@ -118,7 +118,7 @@ function processStreamingSource(source) {
     const isProductionEnvironment = process.env.NODE_ENV === 'production';
     const localIp = getLocalIpAddress(); // Get local IP
     const m3u8ProxyPort = 8082; // Assuming m3u8proxy runs on port 8082 as per logs
-    const m3u8ProxyBaseUrl = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : `http://${localIp}:${m3u8ProxyPort}`;
+    const m3u8ProxyBaseUrl = isProductionEnvironment ? 'http://150.230.133.192:8082' : `http://${localIp}:${m3u8ProxyPort}`;
 
     files.forEach(file => {
         // Try to determine quality from the file URL if not provided
@@ -143,9 +143,9 @@ function processStreamingSource(source) {
             }
         }
 
-        // Route all m3u8 URLs through our proxy
+        // Route m3u8 URLs through our proxy, except for 2embed
         let streamUrl = file.file;
-        if (file.type === 'hls' || file.file.includes('.m3u8')) {
+        if ((file.type === 'hls' || file.file.includes('.m3u8')) && !provider.toLowerCase().startsWith('2embed')) {
             streamUrl = `${m3u8ProxyBaseUrl}/m3u8-proxy?url=${encodeURIComponent(file.file)}`;
             
             // Include required headers in the proxy URL if they exist
