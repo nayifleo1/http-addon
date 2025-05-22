@@ -116,7 +116,9 @@ function processStreamingSource(source) {
     };
 
     const isProductionEnvironment = process.env.NODE_ENV === 'production';
-    const m3u8ProxyBaseUrl = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : 'http://152.67.188.54:7004';
+    const localIp = getLocalIpAddress(); // Get local IP
+    const m3u8ProxyPort = 8082; // Assuming m3u8proxy runs on port 8082 as per logs
+    const m3u8ProxyBaseUrl = isProductionEnvironment ? 'https://m3u8proxy-lon9.onrender.com' : `http://${localIp}:${m3u8ProxyPort}`;
 
     files.forEach(file => {
         // Try to determine quality from the file URL if not provided
