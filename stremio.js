@@ -11,6 +11,8 @@ const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const PORT = process.env.PORT || 7004;  // Added port configuration
 const DISABLE_M3U8_PROXY = process.env.DISABLE_M3U8_PROXY === 'true'; // Added option to disable proxy
+const MAX_RETRIES = 3; // Maximum number of retries for failed requests
+const RETRY_DELAY_MS = 1000; // Delay between retries in milliseconds
 
 // Cache settings
 const CACHE_MAX_AGE = 60 * 60; // 1 hour in seconds
@@ -18,13 +20,27 @@ const CACHE_MAX_AGE_EMPTY = 60; // 60 seconds
 const STALE_REVALIDATE_AGE = 4 * 60 * 60; // 4 hours
 const STALE_ERROR_AGE = 7 * 24 * 60 * 60; // 7 days
 
+// Common browser-like headers
+const BROWSER_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Upgrade-Insecure-Requests': '1',
+    'Connection': 'keep-alive'
+};
+
 // HDRezka Constants
 const REZKA_BASE_URL = 'https://hdrezka.ag'; // Ensure no trailing slash
 const REZKA_BASE_HEADERS = {
   'X-Hdrezka-Android-App': '1',
   'X-Hdrezka-Android-App-Version': '2.2.0',
-  // Add other headers if necessary, e.g., User-Agent
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+  ...BROWSER_HEADERS
 };
 
 // HDRezka Helper Functions
@@ -108,6 +124,36 @@ function parseSubtitlesRezka(inputString) {
     return captions;
 }
 
+// Helper function for retries
+async function fetchWithRetry(url, options, maxRetries = MAX_RETRIES) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const response = await fetch(url, options);
+            
+            // Check if response is OK, if not throw error with status
+            if (!response.ok) {
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            
+            return response; // Success, return response
+        } 
+        catch (error) {
+            lastError = error;
+            console.warn(`Attempt ${attempt}/${maxRetries} failed for ${url}: ${error.message}`);
+            
+            // If it's the last attempt, don't wait
+            if (attempt < maxRetries) {
+                // Wait with exponential backoff
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * Math.pow(2, attempt - 1)));
+            }
+        }
+    }
+    
+    // All attempts failed
+    throw lastError;
+}
+
 // HDRezka Main Scraping Functions
 async function searchAndFindMediaIdRezka(media) {
     console.log(`[HDRezka] Searching for: ${media.title}, Type: ${media.type}, Year: ${media.releaseYear || 'any'}`);
@@ -118,11 +164,12 @@ async function searchAndFindMediaIdRezka(media) {
     searchUrl.searchParams.append('q', media.title);
 
     try {
-        const response = await fetch(searchUrl.toString(), { headers: REZKA_BASE_HEADERS });
-        if (!response.ok) {
-            console.error(`[HDRezka] Search HTTP error! Status: ${response.status} for URL: ${searchUrl.toString()}`);
-            return null;
-        }
+        const response = await fetchWithRetry(searchUrl.toString(), { 
+            headers: REZKA_BASE_HEADERS,
+            // Cloudflare often checks this:
+            referrer: REZKA_BASE_URL + "/",
+            referrerPolicy: 'strict-origin-when-cross-origin'
+        });
         const searchData = await response.text();
         const movieData = [];
         let match;
@@ -170,11 +217,11 @@ async function getTranslatorIdRezka(itemUrl, itemId, media) {
     const fullUrl = itemUrl.startsWith('http') ? itemUrl : `${REZKA_BASE_URL}${itemUrl.startsWith('/') ? itemUrl.substring(1) : itemUrl}`;
 
     try {
-        const response = await fetch(fullUrl, { headers: REZKA_BASE_HEADERS });
-        if (!response.ok) {
-            console.error(`[HDRezka] Translator page HTTP error! Status: ${response.status} for URL: ${fullUrl}`);
-            return null;
-        }
+        const response = await fetchWithRetry(fullUrl, { 
+            headers: REZKA_BASE_HEADERS,
+            referrer: REZKA_BASE_URL + "/",
+            referrerPolicy: 'strict-origin-when-cross-origin'
+        });
         const responseText = await response.text();
         if (responseText.includes('data-translator_id="238"')) {
             console.log('[HDRezka] Found translator ID 238 (Original + subtitles)');
@@ -208,15 +255,17 @@ async function getStreamRezka(id, translatorId, media) {
     const streamUrl = `${REZKA_BASE_URL}/ajax/get_cdn_series/`;
 
     try {
-        const response = await fetch(streamUrl, {
+        const response = await fetchWithRetry(streamUrl, {
             method: 'POST',
             body: searchParams,
-            headers: REZKA_BASE_HEADERS,
+            headers: {
+                ...REZKA_BASE_HEADERS,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-Requested-With': 'XMLHttpRequest' 
+            },
+            referrer: `${REZKA_BASE_URL}/`, // Referrer is important for many sites
+            referrerPolicy: 'strict-origin-when-cross-origin'
         });
-        if (!response.ok) {
-            console.error(`[HDRezka] Stream request HTTP error! Status: ${response.status} for Action: ${searchParams.get('action')}`);
-            return null;
-        }
         const responseText = await response.text();
         const parsedResponse = JSON.parse(responseText);
         if (parsedResponse && parsedResponse.success) {
@@ -554,24 +603,26 @@ builder.defineStreamHandler(async (args) => {
                 xprimeUrl = `https://backend.xprime.tv/primebox?name=${xprimeName}&year=${year}&fallback_year=${year}&season=${season}&episode=${episode}`;
             }
             console.log(`Fetching from xprime.tv: ${xprimeUrl}`);
-            const xprimeResponse = await fetch(xprimeUrl);
-            if (xprimeResponse.ok) {
-                const xprimeResult = await xprimeResponse.json();
-                const processXprimeItem = (item) => {
-                    if (item && typeof item === 'object' && !item.error && item.streams && typeof item.streams === 'object') {
-                        const filesArray = Object.entries(item.streams).map(([quality, fileUrl]) => ({
-                            file: fileUrl, quality: quality, type: 'url'
-                        }));
-                        const sourceToProcess = { provider: 'xprime.tv', files: filesArray, subtitles: item.subtitles || [] };
-                        const processedXprimeStreams = processStreamingSource(sourceToProcess);
-                        allStreams = allStreams.concat(processedXprimeStreams);
-                    } else { console.log('[XPrime.tv] Skipping item due to missing/invalid streams or error:', item); }
-                };
-                if (Array.isArray(xprimeResult)) { xprimeResult.forEach(processXprimeItem); } 
-                else { processXprimeItem(xprimeResult); }
-            } else {
-                console.error(`xprime.tv API error: ${xprimeResponse.status}, URL: ${xprimeUrl}`);
-            }
+            const xprimeResponse = await fetchWithRetry(xprimeUrl, {
+                headers: {
+                    ...BROWSER_HEADERS,
+                    'Origin': 'https://xprime.tv',
+                    'Referer': 'https://xprime.tv/',
+                }
+            });
+            const xprimeResult = await xprimeResponse.json();
+            const processXprimeItem = (item) => {
+                if (item && typeof item === 'object' && !item.error && item.streams && typeof item.streams === 'object') {
+                    const filesArray = Object.entries(item.streams).map(([quality, fileUrl]) => ({
+                        file: fileUrl, quality: quality, type: 'url'
+                    }));
+                    const sourceToProcess = { provider: 'xprime.tv', files: filesArray, subtitles: item.subtitles || [] };
+                    const processedXprimeStreams = processStreamingSource(sourceToProcess);
+                    allStreams = allStreams.concat(processedXprimeStreams);
+                } else { console.log('[XPrime.tv] Skipping item due to missing/invalid streams or error:', item); }
+            };
+            if (Array.isArray(xprimeResult)) { xprimeResult.forEach(processXprimeItem); } 
+            else { processXprimeItem(xprimeResult); }
         } catch (xprimeError) {
             console.error('Error fetching from xprime.tv:', xprimeError);
         }
