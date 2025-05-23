@@ -18,6 +18,251 @@ const CACHE_MAX_AGE_EMPTY = 60; // 60 seconds
 const STALE_REVALIDATE_AGE = 4 * 60 * 60; // 4 hours
 const STALE_ERROR_AGE = 7 * 24 * 60 * 60; // 7 days
 
+// HDRezka Constants
+const REZKA_BASE_URL = 'https://hdrezka.ag'; // Ensure no trailing slash
+const REZKA_BASE_HEADERS = {
+  'X-Hdrezka-Android-App': '1',
+  'X-Hdrezka-Android-App-Version': '2.2.0',
+  // Add other headers if necessary, e.g., User-Agent
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+};
+
+// HDRezka Helper Functions
+function generateRandomFavsRezka() {
+  const randomHex = () => Math.floor(Math.random() * 16).toString(16);
+  const generateSegment = (length) => Array.from({ length }, randomHex).join('');
+  return `${generateSegment(8)}-${generateSegment(4)}-${generateSegment(4)}-${generateSegment(4)}-${generateSegment(12)}`;
+}
+
+function extractTitleAndYearRezka(input) {
+  const regex = /^(.*?),.*?(\d{4})/;
+  const match = input.match(regex);
+  if (match) {
+    const title = match[1];
+    const year = match[2];
+    return { title: title.trim(), year: year ? parseInt(year, 10) : null };
+  }
+  return null;
+}
+
+function parseVideoLinksRezka(inputString) {
+    if (!inputString) {
+        console.warn('[HDRezka] No video links string found in response for parseVideoLinksRezka.');
+        return {};
+    }
+    const linksArray = inputString.split(',');
+    const result = {};
+    linksArray.forEach((link) => {
+        let match = link.match(/\[([^\[\]]+)\](https?:\/\/[^\s,]+\.mp4|null)/);
+        if (!match) {
+            const qualityMatch = link.match(/\[<span[^>]*>([^<]+)/);
+            const urlMatch = link.match(/\][^\[]*?(https?:\/\/[^\s,]+\.mp4|null)/);
+            if (qualityMatch && urlMatch) {
+                match = [null, qualityMatch[1].trim(), urlMatch[1]];
+            }
+        }
+        if (match) {
+            let qualityText = match[1].trim(); // Original quality text, potentially with HTML
+            const mp4Url = match[2];
+
+            // Strip HTML tags from qualityText for a cleaner label
+            const cleanQualityText = qualityText.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim(); 
+
+            if (mp4Url !== 'null') {
+                // Use the cleaned quality text as the key
+                result[cleanQualityText] = { type: 'mp4', url: mp4Url };
+            }
+        } else {
+             console.warn(`[HDRezka] Could not parse quality from link: ${link}`);
+        }
+    });
+    return result;
+}
+
+function parseSubtitlesRezka(inputString) {
+    if (!inputString) {
+        console.log('[HDRezka] No subtitles string found in response for parseSubtitlesRezka.');
+        return [];
+    }
+    const linksArray = inputString.split(',');
+    const captions = [];
+    linksArray.forEach((link) => {
+        const match = link.match(/\[([^\]]+)\](https?:\/\/\S+?)(?=,\[|$)/);
+        if (match) {
+            const language = match[1];
+            const url = match[2];
+            let langCode = language.toLowerCase();
+            if (language === 'Русский') langCode = 'ru';
+            else if (language === 'Українська') langCode = 'uk';
+            else if (language === 'English') langCode = 'en';
+            
+            captions.push({
+                id: url, // Using URL as ID, or generate one
+                language: langCode,
+                hasCorsRestrictions: false, // Assuming false, adjust if known
+                type: 'vtt', // Assuming VTT, adjust if different
+                url: url,
+            });
+        }
+    });
+    return captions;
+}
+
+// HDRezka Main Scraping Functions
+async function searchAndFindMediaIdRezka(media) {
+    console.log(`[HDRezka] Searching for: ${media.title}, Type: ${media.type}, Year: ${media.releaseYear || 'any'}`);
+    const itemRegexPattern = /<a href="([^"]+)"><span class="enty">([^<]+)<\/span> \(([^)]+)\)/g;
+    const idRegexPattern = /\/(\d+)-[^\/]+\.html$/;
+    
+    const searchUrl = new URL('/engine/ajax/search.php', REZKA_BASE_URL);
+    searchUrl.searchParams.append('q', media.title);
+
+    try {
+        const response = await fetch(searchUrl.toString(), { headers: REZKA_BASE_HEADERS });
+        if (!response.ok) {
+            console.error(`[HDRezka] Search HTTP error! Status: ${response.status} for URL: ${searchUrl.toString()}`);
+            return null;
+        }
+        const searchData = await response.text();
+        const movieData = [];
+        let match;
+        while ((match = itemRegexPattern.exec(searchData)) !== null) {
+            const url = match[1];
+            const titleAndYear = match[3];
+            const result = extractTitleAndYearRezka(titleAndYear);
+            if (result !== null) {
+                const id = url.match(idRegexPattern)?.[1] || null;
+                const isMovie = url.includes('/films/');
+                const isShow = url.includes('/series/');
+                const type = isMovie ? 'movie' : isShow ? 'show' : 'unknown';
+                movieData.push({ id: id ?? '', year: result.year ?? 0, type, url, title: match[2] });
+            }
+        }
+
+        let filteredItems = movieData;
+        if (media.releaseYear) {
+            filteredItems = movieData.filter(item => item.year === media.releaseYear);
+        }
+        if (media.type) {
+            filteredItems = filteredItems.filter(item => item.type === media.type);
+        }
+
+        if (filteredItems.length > 0) {
+            console.log(`[HDRezka] Selected item by specific criteria: id=${filteredItems[0].id}, title=${filteredItems[0].title}`);
+            return filteredItems[0];
+        }
+        if (movieData.length > 0) {
+            console.log(`[HDRezka] No exact match, selecting first available item: id=${movieData[0].id}, title=${movieData[0].title}`);
+            return movieData[0];
+        }
+        console.log(`[HDRezka] No items found for: ${media.title}`);
+        return null;
+
+    } catch (error) {
+        console.error(`[HDRezka] Error in searchAndFindMediaIdRezka: ${error.message}`, error);
+        return null;
+    }
+}
+
+async function getTranslatorIdRezka(itemUrl, itemId, media) {
+    if (!itemUrl || !itemId) return null;
+    console.log(`[HDRezka] Getting translator ID for url=${itemUrl}, id=${itemId}`);
+    const fullUrl = itemUrl.startsWith('http') ? itemUrl : `${REZKA_BASE_URL}${itemUrl.startsWith('/') ? itemUrl.substring(1) : itemUrl}`;
+
+    try {
+        const response = await fetch(fullUrl, { headers: REZKA_BASE_HEADERS });
+        if (!response.ok) {
+            console.error(`[HDRezka] Translator page HTTP error! Status: ${response.status} for URL: ${fullUrl}`);
+            return null;
+        }
+        const responseText = await response.text();
+        if (responseText.includes('data-translator_id="238"')) {
+            console.log('[HDRezka] Found translator ID 238 (Original + subtitles)');
+            return '238';
+        }
+        const functionName = media.type === 'movie' ? 'initCDNMoviesEvents' : 'initCDNSeriesEvents';
+        const regexPattern = new RegExp(`sof\.tv\.${functionName}\(${itemId}, ([^,]+)`, 'i');
+        const match = responseText.match(regexPattern);
+        const translatorId = match ? match[1] : null;
+        console.log(`[HDRezka] Extracted translator ID: ${translatorId}`);
+        return translatorId;
+    } catch (error) {
+        console.error(`[HDRezka] Error in getTranslatorIdRezka: ${error.message}`, error);
+        return null;
+    }
+}
+
+async function getStreamRezka(id, translatorId, media) {
+    if(!id || !translatorId) return null;
+    console.log(`[HDRezka] Getting stream for id=${id}, translatorId=${translatorId}`);
+    const searchParams = new URLSearchParams();
+    searchParams.append('id', id);
+    searchParams.append('translator_id', translatorId);
+    if (media.type === 'show' && media.season && media.episode) {
+        searchParams.append('season', media.season.number.toString());
+        searchParams.append('episode', media.episode.number.toString());
+    }
+    searchParams.append('favs', generateRandomFavsRezka());
+    searchParams.append('action', media.type === 'show' ? 'get_stream' : 'get_movie');
+    
+    const streamUrl = `${REZKA_BASE_URL}/ajax/get_cdn_series/`;
+
+    try {
+        const response = await fetch(streamUrl, {
+            method: 'POST',
+            body: searchParams,
+            headers: REZKA_BASE_HEADERS,
+        });
+        if (!response.ok) {
+            console.error(`[HDRezka] Stream request HTTP error! Status: ${response.status} for Action: ${searchParams.get('action')}`);
+            return null;
+        }
+        const responseText = await response.text();
+        const parsedResponse = JSON.parse(responseText);
+        if (parsedResponse && parsedResponse.success) {
+            parsedResponse.formattedQualities = parseVideoLinksRezka(parsedResponse.url);
+            parsedResponse.formattedCaptions = parseSubtitlesRezka(parsedResponse.subtitle);
+            console.log(`[HDRezka] Successfully fetched and parsed stream data. Qualities: ${Object.keys(parsedResponse.formattedQualities).length}, Captions: ${parsedResponse.formattedCaptions.length}`);
+            return parsedResponse;
+        } else {
+            console.error('[HDRezka] Failed to get stream or success was false. Response:', responseText.substring(0, 200));
+            return null;
+        }
+    } catch (error) {
+        console.error(`[HDRezka] Error in getStreamRezka: ${error.message}`, error);
+        return null;
+    }
+}
+
+// Helper function to rank stream quality for sorting
+function getQualityRank(qualityLabel) {
+    if (!qualityLabel) return 100; // Lowest priority if no label
+    const q = String(qualityLabel).toLowerCase();
+    if (q.includes('2160') || q.includes('4k') || q.includes('uhd')) return 1;
+    if (q.includes('1080') || q.includes('fhd')) return 2;
+    if (q.includes('720') || q.includes('hd')) return 3;
+    if (q.includes('adaptive')) return 4; // Adaptive streams like HLS
+    if (q.includes('480') || q.includes('sd')) return 5;
+    if (q.includes('360') || q.includes('ld')) return 6;
+    if (q.includes('unknown')) return 99;
+    // For qualities like "1080p Ultra" from HDRezka, these specific checks still work.
+    // If a quality is not explicitly matched but exists, give it a middle-ground rank.
+    return 50; 
+}
+
+// Helper function to rank provider for sorting
+function getProviderRank(providerName) {
+    if (!providerName) return 99; // Lowest if no name
+    const name = String(providerName).toLowerCase();
+    if (name.includes('xprime.tv')) return 1;
+    if (name.includes('hdrezka')) return 2;
+    // For streams from API_BASE_URL, their provider name might vary.
+    // Assign a general rank for others, or be more specific if provider names are consistent.
+    // Example: if your main API_BASE_URL streams have a consistent provider name like 'myapi'.
+    // if (name.includes('myapi')) return 3;
+    return 10; // Default for other providers
+}
+
 const manifest = {
     id: 'org.tmdbembedapi',
     version: '1.0.0',
@@ -204,7 +449,6 @@ function enrichCacheParams(streams) {
 builder.defineStreamHandler(async (args) => {
     console.log('Stream request received:', args);
     
-    // Only handle IMDB IDs
     if (!args.id.match(/tt\d+/i)) {
         console.log('Not an IMDB ID, skipping');
         return Promise.resolve({ streams: [] });
@@ -212,77 +456,198 @@ builder.defineStreamHandler(async (args) => {
 
     try {
         let allStreams = [];
-        
+        let title, year, tmdbId; // To store title and year for providers
+
+        // Common logic to get TMDB ID, title, and year
         if (args.type === 'movie') {
-            // For movies, convert IMDB ID to TMDB ID first
             const imdbId = args.id;
-            const tmdbId = await convertImdbToTmdb(imdbId, 'movie');
-            
+            tmdbId = await convertImdbToTmdb(imdbId, 'movie');
             if (!tmdbId) {
                 console.log('Could not find TMDB ID for movie:', imdbId);
                 return enrichCacheParams([]);
             }
-            
-            // Fetch from our API using TMDB ID
-            const url = `${API_BASE_URL}/movie/${tmdbId}`;
-            console.log(`Fetching from: ${url}`);
-            const response = await fetch(url);
-            console.log('Response status:', response.status);
-            if (!response.ok) {
-                console.error(`API error: ${response.status}`);
-                return enrichCacheParams([]);
-            }
-            const results = await response.json();
-            console.log('API response:', JSON.stringify(results, null, 2));
-            
-            if (results && !(results instanceof Error)) {
-                // Process each source/provider
-                results.forEach(result => {
-                    const processedStreams = processStreamingSource(result);
-                    console.log('Processed streams for result:', processedStreams);
-                    allStreams = allStreams.concat(processedStreams);
-                });
-            }
+            const movieDetailsUrl = `${TMDB_API_URL}/movie/${tmdbId}`;
+            try {
+                const movieDetailsResponse = await fetch(movieDetailsUrl, { headers: { 'Authorization': `Bearer ${TMDB_API_KEY}`, 'Content-Type': 'application/json' }});
+                if (movieDetailsResponse.ok) {
+                    const movieDetails = await movieDetailsResponse.json();
+                    title = movieDetails.title;
+                    year = movieDetails.release_date ? movieDetails.release_date.substring(0, 4) : null;
+                } else { console.error(`TMDB API error fetching movie details: ${movieDetailsResponse.status}`); }
+            } catch (e) { console.error('Error fetching movie details from TMDB:', e); }
         } else if (args.type === 'series') {
-            // For series, the ID format is tt1234567:1:1
-            const [imdbId, season, episode] = args.id.split(':');
-            
-            if (!season || !episode) {
+            const [imdbId, seasonStr, episodeStr] = args.id.split(':');
+            if (!seasonStr || !episodeStr) {
                 console.log('Missing season or episode number');
                 return enrichCacheParams([]);
             }
-
-            // Convert IMDB ID to TMDB ID
-            const tmdbId = await convertImdbToTmdb(imdbId, 'series');
-            
+            tmdbId = await convertImdbToTmdb(imdbId, 'series');
             if (!tmdbId) {
                 console.log('Could not find TMDB ID for series:', imdbId);
                 return enrichCacheParams([]);
             }
-
-            // Fetch from our API using TMDB ID
-            const url = `${API_BASE_URL}/tv/${tmdbId}?s=${season}&e=${episode}`;
-            console.log(`Fetching from: ${url}`);
-            const response = await fetch(url);
-            console.log('Response status:', response.status);
-            if (!response.ok) {
-                console.error(`API error: ${response.status}`);
-                return enrichCacheParams([]);
-            }
-            const results = await response.json();
-            console.log('API response:', JSON.stringify(results, null, 2));
-
-            if (results && !(results instanceof Error)) {
-                // Process each source/provider
-                results.forEach(result => {
-                    const processedStreams = processStreamingSource(result);
-                    console.log('Processed streams for result:', processedStreams);
-                    allStreams = allStreams.concat(processedStreams);
-                });
-            }
+            const seriesDetailsUrl = `${TMDB_API_URL}/tv/${tmdbId}`;
+            try {
+                const seriesDetailsResponse = await fetch(seriesDetailsUrl, { headers: { 'Authorization': `Bearer ${TMDB_API_KEY}`, 'Content-Type': 'application/json' }});
+                if (seriesDetailsResponse.ok) {
+                    const seriesDetails = await seriesDetailsResponse.json();
+                    title = seriesDetails.name;
+                    year = seriesDetails.first_air_date ? seriesDetails.first_air_date.substring(0, 4) : null;
+                } else { console.error(`TMDB API error fetching series details: ${seriesDetailsResponse.status}`); }
+            } catch (e) { console.error('Error fetching series details from TMDB:', e); }
         }
 
-        console.log('Final streams:', JSON.stringify(allStreams, null, 2));
+        // Normalize title if it exists
+        if (title) {
+            console.log(`[Title Normalization] Original title: ${title}`);
+            // Replace 'X²' with 'X 2', 'X³' with 'X 3' to ensure space for sequels
+            title = title.replace(/([a-zA-Z0-9])²/g, '$1 2')
+                         .replace(/([a-zA-Z0-9])³/g, '$1 3');
+            // Handle cases where ² or ³ might be standalone or already spaced (e.g. "Title ²")
+            title = title.replace(/²/g, '2')
+                         .replace(/³/g, '3');
+            // Add other common superscript/subscript or special char normalizations if needed for other providers
+            console.log(`[Title Normalization] Normalized title: ${title}`);
+        }
+
+        if (!title || !year || !tmdbId) {
+            console.log('Could not retrieve essential metadata (title, year, tmdbId). Aborting stream search.');
+            return enrichCacheParams([]);
+        }
+        console.log(`Processing for: ${title} (${year}), TMDB ID: ${tmdbId}, Stremio Type: ${args.type}`);
+
+        // --- Fetch from existing API (e.g., localhost:8081) ---
+        try {
+            let apiUrl;
+            if (args.type === 'movie') {
+                apiUrl = `${API_BASE_URL}/movie/${tmdbId}`;
+            } else { // series
+                const [, season, episode] = args.id.split(':');
+                apiUrl = `${API_BASE_URL}/tv/${tmdbId}?s=${season}&e=${episode}`;
+            }
+            console.log(`Fetching from main API: ${apiUrl}`);
+            const mainApiResponse = await fetch(apiUrl);
+            if (mainApiResponse.ok) {
+                const results = await mainApiResponse.json();
+                 if (results && !(results instanceof Error) && Array.isArray(results)) {
+                    results.forEach(result => {
+                        const processedStreams = processStreamingSource(result);
+                        allStreams = allStreams.concat(processedStreams);
+                    });
+                }
+            } else {
+                console.error(`Main API error: ${mainApiResponse.status}`);
+            }
+        } catch (error) {
+            console.error('Error fetching from main API:', error);
+        }
+        
+        // --- Fetch from xprime.tv ---
+        try {
+            console.log('[XPrime.tv] Attempting to fetch streams...');
+            const xprimeName = encodeURIComponent(title);
+            let xprimeUrl;
+            if (args.type === 'movie') {
+                xprimeUrl = `https://backend.xprime.tv/primebox?name=${xprimeName}&year=${year}&fallback_year=${year}`;
+            } else { // series
+                const [, season, episode] = args.id.split(':');
+                xprimeUrl = `https://backend.xprime.tv/primebox?name=${xprimeName}&year=${year}&fallback_year=${year}&season=${season}&episode=${episode}`;
+            }
+            console.log(`Fetching from xprime.tv: ${xprimeUrl}`);
+            const xprimeResponse = await fetch(xprimeUrl);
+            if (xprimeResponse.ok) {
+                const xprimeResult = await xprimeResponse.json();
+                const processXprimeItem = (item) => {
+                    if (item && typeof item === 'object' && !item.error && item.streams && typeof item.streams === 'object') {
+                        const filesArray = Object.entries(item.streams).map(([quality, fileUrl]) => ({
+                            file: fileUrl, quality: quality, type: 'url'
+                        }));
+                        const sourceToProcess = { provider: 'xprime.tv', files: filesArray, subtitles: item.subtitles || [] };
+                        const processedXprimeStreams = processStreamingSource(sourceToProcess);
+                        allStreams = allStreams.concat(processedXprimeStreams);
+                    } else { console.log('[XPrime.tv] Skipping item due to missing/invalid streams or error:', item); }
+                };
+                if (Array.isArray(xprimeResult)) { xprimeResult.forEach(processXprimeItem); } 
+                else { processXprimeItem(xprimeResult); }
+            } else {
+                console.error(`xprime.tv API error: ${xprimeResponse.status}, URL: ${xprimeUrl}`);
+            }
+        } catch (xprimeError) {
+            console.error('Error fetching from xprime.tv:', xprimeError);
+        }
+
+        // --- Fetch from HDRezka ---
+        try {
+            console.log('[HDRezka] Attempting to fetch streams...');
+            const hdRezkaMedia = {
+                title: title,
+                type: args.type === 'series' ? 'show' : 'movie',
+                releaseYear: parseInt(year),
+                season: args.type === 'series' ? { number: parseInt(args.id.split(':')[1]) } : undefined,
+                episode: args.type === 'series' ? { number: parseInt(args.id.split(':')[2]) } : undefined
+            };
+
+            const searchResultRezka = await searchAndFindMediaIdRezka(hdRezkaMedia);
+            if (searchResultRezka && searchResultRezka.id) {
+                const translatorIdRezka = await getTranslatorIdRezka(searchResultRezka.url, searchResultRezka.id, hdRezkaMedia);
+                if (translatorIdRezka) {
+                    const streamDataRezka = await getStreamRezka(searchResultRezka.id, translatorIdRezka, hdRezkaMedia);
+                    if (streamDataRezka && streamDataRezka.formattedQualities) {
+                        const filesRezka = Object.entries(streamDataRezka.formattedQualities).map(([quality, data]) => ({
+                            file: data.url,
+                            quality: quality, // e.g., "720p", "1080p Ultra"
+                            type: data.type || 'mp4' // Assuming mp4 if not specified
+                        }));
+
+                        const subtitlesRezka = streamDataRezka.formattedCaptions ? streamDataRezka.formattedCaptions.map(sub => ({
+                            url: sub.url,
+                            lang: sub.language // Should be 'en', 'ru', etc.
+                        })) : [];
+                        
+                        if (filesRezka.length > 0) {
+                             const hdRezkaSource = {
+                                provider: 'HDRezka',
+                                files: filesRezka,
+                                subtitles: subtitlesRezka,
+                                // HDRezka streams don't seem to require special headers for playback from the scraper script
+                            };
+                            console.log('[HDRezka] Source to process:', JSON.stringify(hdRezkaSource, null, 2).substring(0, 500) + "...");
+                            const processedHdRezkaStreams = processStreamingSource(hdRezkaSource);
+                            console.log('[HDRezka] Processed streams:', processedHdRezkaStreams.length);
+                            allStreams = allStreams.concat(processedHdRezkaStreams);
+                        } else {
+                             console.log('[HDRezka] No stream files found after processing API response.');
+                        }
+                    } else {
+                        console.log('[HDRezka] No stream data or formatted qualities received.');
+                    }
+                } else {
+                    console.log('[HDRezka] Could not get translator ID.');
+                }
+            } else {
+                console.log('[HDRezka] Could not find media on HDRezka.');
+            }
+        } catch (hdRezkaError) {
+            console.error('Error fetching from HDRezka:', hdRezkaError);
+        }
+
+        console.log(`[Sorting] Total streams before sorting: ${allStreams.length}`);
+        allStreams.sort((a, b) => {
+            const providerRankA = getProviderRank(a.name); // a.name should be the provider
+            const providerRankB = getProviderRank(b.name);
+
+            if (providerRankA !== providerRankB) {
+                return providerRankA - providerRankB; // Sort by provider first
+            }
+
+            // If providers are the same, then sort by quality
+            const qualityRankA = getQualityRank(a.qualityLabel);
+            const qualityRankB = getQualityRank(b.qualityLabel);
+            
+            return qualityRankA - qualityRankB; // Lower quality rank is better
+        });
+
+        console.log('Final streams from all providers (sorted by provider, then quality):', JSON.stringify(allStreams.map(s => ({title: s.title, provider: s.name, quality: s.qualityLabel})), null, 2));
         return enrichCacheParams(allStreams);
     } catch (error) {
         console.error('Error in stream handler:', error);
