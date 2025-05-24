@@ -167,11 +167,27 @@ async function fetchWithRetry(url, options, maxRetries = MAX_RETRIES) {
 async function nativeHttpsGet(urlString, fetchOptions) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(urlString);
+        
+        // Prepare headers, ensuring 'Authorization' is correctly cased if present
+        const requestHeaders = {};
+        if (fetchOptions.headers) {
+            for (const key in fetchOptions.headers) {
+                if (key.toLowerCase() === 'authorization') {
+                    requestHeaders['Authorization'] = fetchOptions.headers[key];
+                } else {
+                    requestHeaders[key] = fetchOptions.headers[key];
+                }
+            }
+        }
+
+        console.log(`[nativeHttpsGet] Requesting URL: ${urlString}`);
+        console.log(`[nativeHttpsGet] Sending headers:`, JSON.stringify(requestHeaders));
+
         const httpsOptions = {
             hostname: parsedUrl.hostname,
             path: parsedUrl.pathname + parsedUrl.search,
             method: 'GET',
-            headers: fetchOptions.headers || {},
+            headers: requestHeaders, // Use the processed headers
         };
 
         const req = https.request(httpsOptions, (res) => {
