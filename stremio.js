@@ -3,6 +3,8 @@ import { addonBuilder } from 'stremio-addon-sdk';
 import serveHTTP from 'stremio-addon-sdk/src/serveHTTP.js';
 import fetch from 'node-fetch';
 import os from 'os'; // Import the 'os' module
+import https from 'https'; // Added for native HTTPS requests
+import { URL } from 'url'; // Added for URL parsing in native HTTPS requests
 
 dotenv.config();
 
@@ -129,29 +131,73 @@ async function fetchWithRetry(url, options, maxRetries = MAX_RETRIES) {
     let lastError;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const response = await fetch(url, options);
-            
-            // Check if response is OK, if not throw error with status
-            if (!response.ok) {
-                throw new Error(`HTTP error! Status: ${response.status}`);
+            let response;
+            if (url.startsWith(TMDB_API_URL)) { // Check if it's a TMDB URL
+                console.log(`[fetchWithRetry] Using native HTTPS for TMDB URL: ${url}`);
+                response = await nativeHttpsGet(url, options);
+            } else {
+                response = await fetch(url, options); // Original node-fetch
             }
             
-            return response; // Success, return response
+            if (!response.ok) {
+                let errorBody = '';
+                try {
+                    errorBody = await response.text();
+                } catch (e) { /* ignore if can't read body */ }
+                throw new Error(`HTTP error! Status: ${response.status}${response.statusText ? ' ' + response.statusText : ''}. Body: ${errorBody.substring(0, 200)}`);
+            }
+            return response; 
         } 
         catch (error) {
             lastError = error;
             console.warn(`Attempt ${attempt}/${maxRetries} failed for ${url}: ${error.message}`);
             
-            // If it's the last attempt, don't wait
             if (attempt < maxRetries) {
-                // Wait with exponential backoff
                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * Math.pow(2, attempt - 1)));
             }
         }
     }
     
-    // All attempts failed
+    // Log the full error object for more details if it's a complex error
+    console.error(`All attempts failed for ${url}. Last error:`, lastError);
     throw lastError;
+}
+
+// New function to make GET requests using Node's native https module
+async function nativeHttpsGet(urlString, fetchOptions) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(urlString);
+        const httpsOptions = {
+            hostname: parsedUrl.hostname,
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: 'GET',
+            headers: fetchOptions.headers || {},
+        };
+
+        const req = https.request(httpsOptions, (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => {
+                body += chunk;
+            });
+            res.on('end', () => {
+                resolve({
+                    ok: res.statusCode >= 200 && res.statusCode < 300,
+                    status: res.statusCode,
+                    statusText: res.statusMessage,
+                    headers: res.headers,
+                    json: async () => JSON.parse(body), // Assumes body is valid JSON
+                    text: async () => body,
+                });
+            });
+        });
+
+        req.on('error', (e) => { // Handles network errors like ECONNRESET before response
+            reject(e);
+        });
+
+        req.end(); // Send the request
+    });
 }
 
 // HDRezka Main Scraping Functions
