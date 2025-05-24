@@ -360,16 +360,12 @@ async function convertImdbToTmdb(imdbId, type = 'movie') {
         console.log(`Converting IMDB ID ${imdbId} to TMDB ID`);
         const url = `${TMDB_API_URL}/find/${imdbId}?external_source=imdb_id`;
         console.log(`Fetching from TMDB: ${url}`);
-        const response = await fetch(url, {
+        const response = await fetchWithRetry(url, {
             headers: {
                 'Authorization': `Bearer ${TMDB_API_KEY}`,
                 'Content-Type': 'application/json'
             }
         });
-        if (!response.ok) {
-            console.error(`TMDB API error: ${response.status}`);
-            return null;
-        }
         const data = await response.json();
         console.log('TMDB response:', data);
 
@@ -517,7 +513,7 @@ builder.defineStreamHandler(async (args) => {
             }
             const movieDetailsUrl = `${TMDB_API_URL}/movie/${tmdbId}`;
             try {
-                const movieDetailsResponse = await fetch(movieDetailsUrl, { headers: { 'Authorization': `Bearer ${TMDB_API_KEY}`, 'Content-Type': 'application/json' }});
+                const movieDetailsResponse = await fetchWithRetry(movieDetailsUrl, { headers: { 'Authorization': `Bearer ${TMDB_API_KEY}`, 'Content-Type': 'application/json' }});
                 if (movieDetailsResponse.ok) {
                     const movieDetails = await movieDetailsResponse.json();
                     title = movieDetails.title;
@@ -537,7 +533,7 @@ builder.defineStreamHandler(async (args) => {
             }
             const seriesDetailsUrl = `${TMDB_API_URL}/tv/${tmdbId}`;
             try {
-                const seriesDetailsResponse = await fetch(seriesDetailsUrl, { headers: { 'Authorization': `Bearer ${TMDB_API_KEY}`, 'Content-Type': 'application/json' }});
+                const seriesDetailsResponse = await fetchWithRetry(seriesDetailsUrl, { headers: { 'Authorization': `Bearer ${TMDB_API_KEY}`, 'Content-Type': 'application/json' }});
                 if (seriesDetailsResponse.ok) {
                     const seriesDetails = await seriesDetailsResponse.json();
                     title = seriesDetails.name;
@@ -710,7 +706,7 @@ const addonInterface = builder.getInterface();
 console.log('Addon interface created');
 
 // Serve the addon
-console.log('Starting HTTP server on port ' + PORT);
+console.log('Starting HTTP server on port ' + PORT + ', listening on host 0.0.0.0 (all network interfaces).');
 serveHTTP(addonInterface, { port: PORT, host: '0.0.0.0' }) // Listen on 0.0.0.0
     .then(({ url }) => {
         const localIp = getLocalIpAddress();
